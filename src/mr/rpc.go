@@ -11,20 +11,26 @@ import (
 	"strconv"
 )
 
-//
-// example to show how to declare the arguments
-// and reply for an RPC.
-//
+type Empty struct{}
 
-type ExampleArgs struct {
-	X int
+type SingleInt struct {
+	Value int
 }
 
-type ExampleReply struct {
-	Y int
-}
+type TaskType int
 
-// Add your RPC definitions here.
+const (
+	WaitForTask TaskType = iota
+	NoTask
+	MapTask
+	ReduceTask
+)
+
+type Task struct {
+	Type   TaskType
+	Number int    // the id of a m or r task
+	Input  string // the filename/path of the input file
+}
 
 // Cook up a unique-ish UNIX-domain socket name
 // in /var/tmp, for the coordinator.

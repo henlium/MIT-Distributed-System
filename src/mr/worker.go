@@ -1,10 +1,14 @@
 package mr
 
 import (
+	"encoding/json"
 	"fmt"
 	"hash/fnv"
+	"io/ioutil"
 	"log"
 	"net/rpc"
+	"os"
+	"sort"
 )
 
 // Map functions return a slice of KeyValue.
@@ -24,39 +28,117 @@ func ihash(key string) int {
 // main/mrworker.go calls this function.
 func Worker(mapf func(string, string) []KeyValue,
 	reducef func(string, []string) string) {
-
-	// Your worker implementation here.
-
-	// uncomment to send the Example RPC to the coordinator.
-	// CallExample()
-
+	w := newWorker(mapf, reducef)
+	w.main()
 }
 
-// example function to show how to make an RPC call to the coordinator.
-//
-// the RPC argument and reply types are defined in rpc.go.
-func CallExample() {
+type worker struct {
+	r int // size of reduce tasks
 
-	// declare an argument structure.
-	args := ExampleArgs{}
+	mapf    func(string, string) []KeyValue
+	reducef func(string, []string) string
+}
 
-	// fill in the argument(s).
-	args.X = 99
+func newWorker(mapf func(string, string) []KeyValue,
+	reducef func(string, []string) string) *worker {
+	w := worker{}
+	w.r = getR()
+	w.mapf = mapf
+	w.reducef = reducef
+	return &w
+}
 
-	// declare a reply structure.
-	reply := ExampleReply{}
-
-	// send the RPC request, wait for the reply.
-	// the "Coordinator.Example" tells the
-	// receiving server that we'd like to call
-	// the Example() method of struct Coordinator.
-	ok := call("Coordinator.Example", &args, &reply)
-	if ok {
-		// reply.Y should be 100.
-		fmt.Printf("reply.Y %v\n", reply.Y)
-	} else {
-		fmt.Printf("call failed!\n")
+func (w *worker) main() {
+	println("worker started")
+	for {
+		t := getTask()
+		if t.Type == NoTask {
+			break
+		}
+		if t.Type == MapTask {
+			w.doMap(t)
+		}
+		if t.Type == ReduceTask {
+			w.doReduce(t)
+		}
+		finishTask(t)
 	}
+}
+
+func getR() int {
+	reply := SingleInt{}
+	if !call("Coordinator.GetR", &Empty{}, &reply) {
+		log.Fatal("GetR failed")
+	}
+	return reply.Value
+}
+
+func getTask() Task {
+	t := Task{}
+	if !call("Coordinator.GetTask", &Empty{}, &t) {
+		log.Fatal("GetTask failed")
+	}
+	println(t.Type)
+	return t
+}
+
+func (w *worker) doMap(task Task) {
+	println("Do M", task.Number)
+	filename := task.Input
+	content, err := ioutil.ReadFile(filename)
+	if err != nil {
+		log.Fatal(err)
+	}
+	kvs := (w.mapf)(filename, string(content))
+	var iks [][]KeyValue // a slice of intermediate keys
+	for i := 0; i < w.r; i++ {
+		iks = append(iks, []KeyValue{})
+	}
+	for _, kv := range kvs {
+		r := ihash(kv.Key) % w.r
+		iks[r] = append(iks[r], kv)
+	}
+	// TODO: Extract writing to a func
+	for i, ik := range iks {
+		sort.Slice(ik, func(i, j int) bool { return ik[i].Key < ik[j].Key })
+		file, _ := ioutil.TempFile("", "mr")
+		enc := json.NewEncoder(file)
+		for _, kv := range ik {
+			enc.Encode(kv)
+		}
+		file.Close()
+		os.Rename(file.Name(), fmt.Sprintf("mr-%v-%v", task.Number, i))
+	}
+	finishTask(task)
+}
+
+func (w *worker) doReduce(task Task) {
+	println("Do R", task.Number)
+	kvs := map[string][]string{}
+	for i := 0; i < w.r; i++ {
+		filename := fmt.Sprintf("mr-%v-%v", i, task.Number)
+		file, _ := os.Open(filename)
+		dec := json.NewDecoder(file)
+		for {
+			var kv KeyValue
+			if err := dec.Decode(&kv); err != nil {
+				break
+			}
+			kvs[kv.Key] = append(kvs[kv.Key], kv.Value)
+		}
+	}
+	file, _ := ioutil.TempFile("", "mr-tmp")
+	enc := json.NewEncoder(file)
+	for key, values := range kvs {
+		result := w.reducef(key, values)
+		enc.Encode(KeyValue{key, result})
+	}
+	file.Close()
+	os.Rename(file.Name(), fmt.Sprintf("mr-out-%v", task.Number))
+}
+
+func finishTask(t Task) {
+	call("Coordinator.FinishTask", &t, &Empty{})
 }
 
 // send an RPC request to the coordinator, wait for the response.
