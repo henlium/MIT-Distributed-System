@@ -8,6 +8,7 @@ import (
 	"os"
 	"sync"
 	"sync/atomic"
+	"time"
 )
 
 type TaskState int
@@ -17,6 +18,11 @@ const (
 	Assigned
 	Finished
 )
+
+type taskRecord struct {
+	state TaskState
+	start time.Time
+}
 
 type Coordinator struct {
 	m int // size of map tasks
@@ -55,8 +61,9 @@ func (c *Coordinator) GetTask(_ *Empty, task *Task) error {
 func (c *Coordinator) getUnassignedM() (t Task) {
 	c.assignLock.Lock()
 	defer c.assignLock.Unlock()
-	c.mapState.Range(func(num, state interface{}) bool {
-		if state != Unassigned {
+	c.mapState.Range(func(num, r interface{}) bool {
+		record := r.(taskRecord)
+		if record.state != Unassigned {
 			return true
 		}
 		i, _ := num.(int)
@@ -66,15 +73,16 @@ func (c *Coordinator) getUnassignedM() (t Task) {
 	if t.Type != MapTask {
 		return
 	}
-	c.mapState.Store(t.Number, Assigned)
+	c.mapState.Store(t.Number, taskRecord{Assigned, time.Now()})
 	return
 }
 
 func (c *Coordinator) getUnassignedR() (t Task) {
 	c.assignLock.Lock()
 	defer c.assignLock.Unlock()
-	c.reduceState.Range(func(num, state interface{}) bool {
-		if state != Unassigned {
+	c.reduceState.Range(func(num, r interface{}) bool {
+		record := r.(taskRecord)
+		if record.state != Unassigned {
 			return true
 		}
 		t.Number, _ = num.(int)
@@ -84,28 +92,56 @@ func (c *Coordinator) getUnassignedR() (t Task) {
 	if t.Type != ReduceTask {
 		return
 	}
-	c.reduceState.Store(t.Number, Assigned)
+	c.reduceState.Store(t.Number, taskRecord{Assigned, time.Now()})
 	return
 }
 
 func (c *Coordinator) FinishTask(task *Task, _ *Empty) error {
 	if task.Type == MapTask {
-		curState, _ := c.mapState.Load(task.Number)
-		if curState == Finished {
+		val, _ := c.mapState.Load(task.Number)
+		tr := val.(taskRecord)
+		if tr.state == Finished {
 			return nil
 		}
-		c.mapState.Store(task.Number, Finished)
+		c.mapState.Store(task.Number, taskRecord{state: Finished})
 		atomic.AddInt64(&c.finishedM, 1)
 	}
 	if task.Type == ReduceTask {
-		curState, _ := c.reduceState.Load(task.Number)
-		if curState == Finished {
+		val, _ := c.reduceState.Load(task.Number)
+		tr := val.(taskRecord)
+		if tr.state == Finished {
 			return nil
 		}
-		c.reduceState.Store(task.Number, Finished)
+		c.reduceState.Store(task.Number, taskRecord{state: Finished})
 		atomic.AddInt64(&c.finishedR, 1)
 	}
 	return nil
+}
+
+func (c *Coordinator) checkStragglers() {
+	for {
+		time.Sleep(5 * time.Second)
+		c.mapState.Range(func(num, r interface{}) bool {
+			record := r.(taskRecord)
+			if record.state != Assigned {
+				return true
+			}
+			if time.Since(record.start) > 10*time.Second {
+				c.mapState.Store(num, taskRecord{})
+			}
+			return true
+		})
+		c.reduceState.Range(func(num, r interface{}) bool {
+			record := r.(taskRecord)
+			if record.state != Assigned {
+				return true
+			}
+			if time.Since(record.start) > 10*time.Second {
+				c.reduceState.Store(num, taskRecord{})
+			}
+			return true
+		})
+	}
 }
 
 // start a thread that listens for RPCs from worker.go
@@ -140,11 +176,13 @@ func MakeCoordinator(files []string, nReduce int) *Coordinator {
 	}
 
 	for i := 0; i < c.m; i++ {
-		c.mapState.Store(i, Unassigned)
+		c.mapState.Store(i, taskRecord{})
 	}
 	for i := 0; i < c.r; i++ {
-		c.reduceState.Store(i, Unassigned)
+		c.reduceState.Store(i, taskRecord{})
 	}
+
+	go c.checkStragglers()
 
 	c.server()
 	return &c
