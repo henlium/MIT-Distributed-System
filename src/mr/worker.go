@@ -128,10 +128,9 @@ func (w *worker) doReduce(task Task) {
 		}
 	}
 	file, _ := ioutil.TempFile("", "mr-tmp")
-	enc := json.NewEncoder(file)
 	for key, values := range kvs {
 		result := w.reducef(key, values)
-		enc.Encode(KeyValue{key, result})
+		fmt.Fprintf(file, "%v %v\n", key, result)
 	}
 	file.Close()
 	os.Rename(file.Name(), fmt.Sprintf("mr-out-%v", task.Number))
