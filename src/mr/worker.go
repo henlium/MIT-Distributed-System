@@ -78,12 +78,10 @@ func getTask() Task {
 	if !call("Coordinator.GetTask", &Empty{}, &t) {
 		log.Fatal("GetTask failed")
 	}
-	println(t.Type)
 	return t
 }
 
 func (w *worker) doMap(task Task) {
-	println("Do M", task.Number)
 	filename := task.Input
 	content, err := ioutil.ReadFile(filename)
 	if err != nil {
@@ -113,7 +111,6 @@ func (w *worker) doMap(task Task) {
 }
 
 func (w *worker) doReduce(task Task) {
-	println("Do R", task.Number)
 	kvs := map[string][]string{}
 	for i := 0; i < w.r; i++ {
 		filename := fmt.Sprintf("mr-%v-%v", i, task.Number)
