@@ -29,7 +29,7 @@ type Coordinator struct {
 	finishedM int64
 	finishedR int64
 
-	Files []string
+	mTasks []Task
 }
 
 // get the size of reduce tasks for workers
@@ -41,8 +41,7 @@ func (c *Coordinator) GetR(_ *Empty, r *SingleInt) error {
 // get a task for workers
 func (c *Coordinator) GetTask(_ *Empty, task *Task) error {
 	if int(atomic.LoadInt64(&c.finishedM)) < c.m {
-		task = c.getUnassignedM()
-		println(task.Type)
+		*task = *c.getUnassignedM()
 		return nil
 	} else if int(atomic.LoadInt64(&c.finishedR)) < c.r {
 		*task = c.getUnassignedR()
@@ -58,12 +57,10 @@ func (c *Coordinator) getUnassignedM() (t *Task) {
 			return true
 		}
 		i, _ := num.(int)
-		if i >= len(c.Files) {
-			panic(fmt.Sprintf("Files index out of range: %v, %v", i, len(c.Files)))
+		if i >= len(c.mTasks) {
+			panic(fmt.Sprintf("Files index out of range: %v, %v", i, len(c.mTasks)))
 		}
-		t.Input = c.Files[i]
-		t.Number = i
-		t.Type = MapTask
+		t = &c.mTasks[i]
 		return false
 	})
 	return
@@ -83,11 +80,19 @@ func (c *Coordinator) getUnassignedR() (t Task) {
 
 func (c *Coordinator) FinishTask(task *Task, _ *Empty) error {
 	if task.Type == MapTask {
-		println("M done", task.Number)
+		curState, _ := c.mapState.Load(task.Number)
+		if curState == Finished {
+			return nil
+		}
+		println("M done", task.Number, "Remaining", atomic.LoadInt64(&c.finishedM))
 		c.mapState.Store(task.Number, Finished)
 		atomic.AddInt64(&c.finishedM, 1)
 	}
 	if task.Type == ReduceTask {
+		curState, _ := c.reduceState.Load(task.Number)
+		if curState == Finished {
+			return nil
+		}
 		println("R done", task.Number)
 		c.reduceState.Store(task.Number, Finished)
 		atomic.AddInt64(&c.finishedR, 1)
@@ -120,7 +125,11 @@ func (c *Coordinator) Done() bool {
 // main/mrcoordinator.go calls this function.
 // nReduce is the number of reduce tasks to use.
 func MakeCoordinator(files []string, nReduce int) *Coordinator {
-	c := Coordinator{Files: files, m: len(files), r: nReduce}
+	c := Coordinator{m: len(files), r: nReduce}
+	c.mTasks = make([]Task, 0, len(files))
+	for i, f := range files {
+		c.mTasks = append(c.mTasks, Task{Type: MapTask, Number: i, Input: f})
+	}
 
 	for i := 0; i < c.m; i++ {
 		c.mapState.Store(i, Unassigned)
