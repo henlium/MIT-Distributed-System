@@ -1,7 +1,6 @@
 package mr
 
 import (
-	"fmt"
 	"log"
 	"net"
 	"net/http"
@@ -57,9 +56,6 @@ func (c *Coordinator) getUnassignedM() (t *Task) {
 			return true
 		}
 		i, _ := num.(int)
-		if i >= len(c.mTasks) {
-			panic(fmt.Sprintf("Files index out of range: %v, %v", i, len(c.mTasks)))
-		}
 		t = &c.mTasks[i]
 		return false
 	})
