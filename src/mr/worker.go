@@ -9,6 +9,7 @@ import (
 	"net/rpc"
 	"os"
 	"sort"
+	"time"
 )
 
 // Map functions return a slice of KeyValue.
@@ -49,7 +50,6 @@ func newWorker(mapf func(string, string) []KeyValue,
 }
 
 func (w *worker) main() {
-	println("worker started")
 	for {
 		t := getTask()
 		if t.Type == NoTask {
@@ -60,6 +60,10 @@ func (w *worker) main() {
 		}
 		if t.Type == ReduceTask {
 			w.doReduce(t)
+		}
+		if t.Type == WaitForTask {
+			time.Sleep(time.Second)
+			continue
 		}
 		finishTask(t)
 	}
