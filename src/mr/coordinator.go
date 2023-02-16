@@ -22,6 +22,8 @@ type Coordinator struct {
 	m int // size of map tasks
 	r int // size of reduce tasks
 
+	assignLock sync.Mutex
+
 	mapState    sync.Map
 	reduceState sync.Map
 
@@ -40,7 +42,7 @@ func (c *Coordinator) GetR(_ *Empty, r *SingleInt) error {
 // get a task for workers
 func (c *Coordinator) GetTask(_ *Empty, task *Task) error {
 	if int(atomic.LoadInt64(&c.finishedM)) < c.m {
-		*task = *c.getUnassignedM()
+		*task = c.getUnassignedM()
 		return nil
 	} else if int(atomic.LoadInt64(&c.finishedR)) < c.r {
 		*task = c.getUnassignedR()
@@ -50,19 +52,27 @@ func (c *Coordinator) GetTask(_ *Empty, task *Task) error {
 	return nil
 }
 
-func (c *Coordinator) getUnassignedM() (t *Task) {
+func (c *Coordinator) getUnassignedM() (t Task) {
+	c.assignLock.Lock()
+	defer c.assignLock.Unlock()
 	c.mapState.Range(func(num, state interface{}) bool {
 		if state != Unassigned {
 			return true
 		}
 		i, _ := num.(int)
-		t = &c.mTasks[i]
+		t = c.mTasks[i]
 		return false
 	})
+	if t.Type != MapTask {
+		return
+	}
+	c.mapState.Store(t.Number, Assigned)
 	return
 }
 
 func (c *Coordinator) getUnassignedR() (t Task) {
+	c.assignLock.Lock()
+	defer c.assignLock.Unlock()
 	c.reduceState.Range(func(num, state interface{}) bool {
 		if state != Unassigned {
 			return true
@@ -71,6 +81,10 @@ func (c *Coordinator) getUnassignedR() (t Task) {
 		t.Type = ReduceTask
 		return false
 	})
+	if t.Type != ReduceTask {
+		return
+	}
+	c.reduceState.Store(t.Number, Assigned)
 	return
 }
 
@@ -80,7 +94,6 @@ func (c *Coordinator) FinishTask(task *Task, _ *Empty) error {
 		if curState == Finished {
 			return nil
 		}
-		println("M done", task.Number, "Remaining", atomic.LoadInt64(&c.finishedM))
 		c.mapState.Store(task.Number, Finished)
 		atomic.AddInt64(&c.finishedM, 1)
 	}
@@ -89,7 +102,6 @@ func (c *Coordinator) FinishTask(task *Task, _ *Empty) error {
 		if curState == Finished {
 			return nil
 		}
-		println("R done", task.Number)
 		c.reduceState.Store(task.Number, Finished)
 		atomic.AddInt64(&c.finishedR, 1)
 	}
