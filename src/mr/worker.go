@@ -103,38 +103,56 @@ func (w *worker) doMap(task Task) {
 	// TODO: Extract writing to a func
 	for i, ik := range iks {
 		sort.Slice(ik, func(i, j int) bool { return ik[i].Key < ik[j].Key })
-		file, _ := ioutil.TempFile("", "mr")
-		enc := json.NewEncoder(file)
-		for _, kv := range ik {
-			enc.Encode(kv)
-		}
-		file.Close()
-		os.Rename(file.Name(), fmt.Sprintf("mr-%v-%v", task.Number, i))
+		writeJsons(ik, fmt.Sprintf("mr-%v-%v", task.Number, i))
 	}
 	finishTask(task)
+}
+
+func writeJsons(kvs []KeyValue, filename string) {
+	file, _ := ioutil.TempFile("", "")
+	enc := json.NewEncoder(file)
+	for _, kv := range kvs {
+		enc.Encode(kv)
+	}
+	file.Close()
+	os.Rename(file.Name(), filename)
 }
 
 func (w *worker) doReduce(task Task) {
 	kvs := map[string][]string{}
 	for i := 0; i < w.r; i++ {
 		filename := fmt.Sprintf("mr-%v-%v", i, task.Number)
-		file, _ := os.Open(filename)
-		dec := json.NewDecoder(file)
-		for {
-			var kv KeyValue
-			if err := dec.Decode(&kv); err != nil {
-				break
-			}
-			kvs[kv.Key] = append(kvs[kv.Key], kv.Value)
-		}
+		loadIK(filename, kvs)
 	}
-	file, _ := ioutil.TempFile("", "mr-tmp")
+	var key2result []KeyValue
 	for key, values := range kvs {
 		result := w.reducef(key, values)
-		fmt.Fprintf(file, "%v %v\n", key, result)
+		key2result = append(key2result, KeyValue{key, result})
+	}
+	filename := fmt.Sprintf("mr-out-%v", task.Number)
+	writeTSV(key2result, filename)
+}
+
+// Load a file of intermediate key to a "key to values" slice
+func loadIK(filename string, kvs map[string][]string) {
+	file, _ := os.Open(filename)
+	dec := json.NewDecoder(file)
+	for {
+		var kv KeyValue
+		if err := dec.Decode(&kv); err != nil {
+			break
+		}
+		kvs[kv.Key] = append(kvs[kv.Key], kv.Value)
+	}
+}
+
+func writeTSV(keyValues []KeyValue, filename string) {
+	file, _ := ioutil.TempFile("", "mr-tmp")
+	for _, kv := range keyValues {
+		fmt.Fprintf(file, "%v %v\n", kv.Key, kv.Value)
 	}
 	file.Close()
-	os.Rename(file.Name(), fmt.Sprintf("mr-out-%v", task.Number))
+	os.Rename(file.Name(), filename)
 }
 
 func finishTask(t Task) {
