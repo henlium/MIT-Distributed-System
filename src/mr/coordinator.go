@@ -11,6 +11,21 @@ import (
 	"time"
 )
 
+type TaskType int
+
+const (
+	WaitForTask TaskType = iota
+	NoTask
+	MapTask
+	ReduceTask
+)
+
+type Task struct {
+	Type   TaskType
+	Number int    // the id of a m or r task
+	Input  string // the filename/path of the input file
+}
+
 type TaskState int
 
 const (
