@@ -48,6 +48,7 @@ type Coordinator struct {
 	mapState    sync.Map
 	reduceState sync.Map
 
+	// TODO: Encapsulate the atomic counter behaviors
 	finishedM int64
 	finishedR int64
 
