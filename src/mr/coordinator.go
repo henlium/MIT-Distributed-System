@@ -48,9 +48,10 @@ type Coordinator struct {
 	mapState    sync.Map
 	reduceState sync.Map
 
-	// TODO: Encapsulate the atomic counter behaviors
-	finishedM int64
-	finishedR int64
+	// TODO: The following atomic counters somehow introduce socket connection errors
+
+	finishedM atomic.Int64
+	finishedR atomic.Int64
 
 	mTasks []Task
 }
@@ -63,10 +64,10 @@ func (c *Coordinator) GetR(_ *Empty, r *SingleInt) error {
 
 // get a task for workers
 func (c *Coordinator) GetTask(_ *Empty, task *Task) error {
-	if int(atomic.LoadInt64(&c.finishedM)) < c.m {
+	if int(c.finishedM.Load()) < c.m {
 		*task = c.getUnassignedM()
 		return nil
-	} else if int(atomic.LoadInt64(&c.finishedR)) < c.r {
+	} else if int(c.finishedM.Load()) < c.r {
 		*task = c.getUnassignedR()
 		return nil
 	}
@@ -120,7 +121,7 @@ func (c *Coordinator) FinishTask(task *Task, _ *Empty) error {
 			return nil
 		}
 		c.mapState.Store(task.Number, taskRecord{state: Finished})
-		atomic.AddInt64(&c.finishedM, 1)
+		c.finishedM.Add(1)
 	}
 	if task.Type == ReduceTask {
 		val, _ := c.reduceState.Load(task.Number)
@@ -129,7 +130,7 @@ func (c *Coordinator) FinishTask(task *Task, _ *Empty) error {
 			return nil
 		}
 		c.reduceState.Store(task.Number, taskRecord{state: Finished})
-		atomic.AddInt64(&c.finishedR, 1)
+		c.finishedR.Add(1)
 	}
 	return nil
 }
@@ -178,7 +179,7 @@ func (c *Coordinator) server() {
 // if the entire job has finished.
 func (c *Coordinator) Done() bool {
 	// println("finished R:", atomic.LoadInt64(&c.finishedR))
-	return int(atomic.LoadInt64(&c.finishedR)) == c.r
+	return int(c.finishedR.Load()) == c.r
 }
 
 // create a Coordinator.
