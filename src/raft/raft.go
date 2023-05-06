@@ -303,7 +303,7 @@ func (rf *Raft) ticker() {
 	for !rf.killed() {
 		if rf.state == leader {
 			rf.heartbeat()
-			time.Sleep(time.Duration(50) * time.Millisecond)
+			time.Sleep(time.Duration(100) * time.Millisecond)
 			continue
 		}
 
@@ -319,7 +319,7 @@ func (rf *Raft) ticker() {
 
 		// pause for a random amount of time between 50 and 350
 		// milliseconds.
-		ms := 50 + (rand.Int63() % 350)
+		ms := 120 + (rand.Int63() % 200)
 		time.Sleep(time.Duration(ms) * time.Millisecond)
 
 	}
