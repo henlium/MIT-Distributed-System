@@ -184,7 +184,7 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	termRes := rf.checkTerm(args.Term)
 	reply.Term = rf.term
 	if termRes == termAhead {
-		println(rf.me, "rejected vote from", args.Candidate, rf.term, ">", args.Term)
+		// println(rf.me, "rejected vote from", args.Candidate, rf.term, ">", args.Term)
 		reply.Granted = false
 		return
 	}
@@ -196,7 +196,7 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 		reply.Granted = true
 		rf.vote = args.Candidate
 	} else {
-		println(rf.me, "rejected vote from", args.Candidate, ", already voted for", rf.vote)
+		// println(rf.me, "rejected vote from", args.Candidate, ", already voted for", rf.vote)
 	}
 }
 
