@@ -70,7 +70,7 @@ type Raft struct {
 	// state a Raft server must maintain.
 	term        int
 	state       State
-	leaderAlive bool
+	leaderAlive atomic.Bool
 	vote        int
 	inElection  atomic.Bool
 }
@@ -79,12 +79,6 @@ type Raft struct {
 // believes it is the leader.
 func (rf *Raft) GetState() (int, bool) {
 	return rf.term, rf.state == leader
-}
-
-func (rf *Raft) setLeaderAlive(alive bool) {
-	rf.mu.Lock()
-	defer rf.mu.Unlock()
-	rf.leaderAlive = alive
 }
 
 // save Raft's persistent state to stable storage,
@@ -248,7 +242,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	if termRes == termAhead {
 		return
 	}
-	rf.setLeaderAlive(true)
+	rf.leaderAlive.Store(true)
 	rf.inElection.Store(false)
 	if rf.state != follower {
 		rf.becomeFollower(args.Term)
@@ -309,14 +303,14 @@ func (rf *Raft) ticker() {
 			continue
 		}
 
-		if !rf.leaderAlive {
+		if !rf.leaderAlive.Load() {
 			rf.becomeCandidate()
 			rf.newElection()
 			if rf.state == leader {
 				continue
 			}
 		} else {
-			rf.setLeaderAlive(false)
+			rf.leaderAlive.Store(false)
 		}
 
 		// pause for a random amount of time between 50 and 350
