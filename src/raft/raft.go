@@ -49,6 +49,14 @@ type ApplyMsg struct {
 	SnapshotIndex int
 }
 
+type State int
+
+const (
+	follower State = iota
+	candidate
+	leader
+)
+
 // A Go object implementing a single Raft peer.
 type Raft struct {
 	mu        sync.Mutex          // Lock to protect shared access to this peer's state
@@ -60,17 +68,23 @@ type Raft struct {
 	// Your data here (2A, 2B, 2C).
 	// Look at the paper's Figure 2 for a description of what
 	// state a Raft server must maintain.
-
+	term        int
+	state       State
+	leaderAlive bool
+	vote        int
+	inElection  atomic.Bool
 }
 
 // return currentTerm and whether this server
 // believes it is the leader.
 func (rf *Raft) GetState() (int, bool) {
+	return rf.term, rf.state == leader
+}
 
-	var term int
-	var isleader bool
-	// Your code here (2A).
-	return term, isleader
+func (rf *Raft) setLeaderAlive(alive bool) {
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
+	rf.leaderAlive = alive
 }
 
 // save Raft's persistent state to stable storage,
@@ -120,21 +134,72 @@ func (rf *Raft) Snapshot(index int, snapshot []byte) {
 
 }
 
+type Termer interface {
+	getTerm() int
+}
+
+type TermInt struct {
+	Term int
+}
+
+func (t TermInt) getTerm() int {
+	return t.Term
+}
+
+func (rf *Raft) call(server int, svcMeth string, args Termer, reply Termer) bool {
+	ok := rf.peers[server].Call(svcMeth, args, reply)
+	if ok {
+		rf.checkTerm(reply.getTerm())
+	}
+	return ok
+}
+
+const (
+	termBehind int = iota
+	termEqual
+	termAhead
+)
+
+func (rf *Raft) checkTerm(term int) int {
+	if term > rf.term {
+		rf.becomeFollower(term)
+		return termBehind
+	} else if term == rf.term {
+		return termEqual
+	} else {
+		return termAhead
+	}
+}
+
 // example RequestVote RPC arguments structure.
 // field names must start with capital letters!
 type RequestVoteArgs struct {
-	// Your data here (2A, 2B).
+	TermInt
+	Candidate int
 }
 
 // example RequestVote RPC reply structure.
 // field names must start with capital letters!
 type RequestVoteReply struct {
-	// Your data here (2A).
+	TermInt
+	Granted bool
 }
 
 // example RequestVote RPC handler.
 func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
-	// Your code here (2A, 2B).
+	termRes := rf.checkTerm(args.Term)
+	reply.Term = rf.term
+	if termRes == termAhead {
+		println(rf.me, "rejected vote from", args.Candidate, rf.term, ">", args.Term)
+		reply.Granted = false
+		return
+	}
+	if termRes == termBehind || rf.vote == -1 || rf.vote == args.Candidate {
+		reply.Granted = true
+		rf.vote = args.Candidate
+	} else {
+		println(rf.me, "rejected vote from", args.Candidate, ", already voted for", rf.vote)
+	}
 }
 
 // example code to send a RequestVote RPC to a server.
@@ -165,7 +230,33 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 // that the caller passes the address of the reply struct with &, not
 // the struct itself.
 func (rf *Raft) sendRequestVote(server int, args *RequestVoteArgs, reply *RequestVoteReply) bool {
-	ok := rf.peers[server].Call("Raft.RequestVote", args, reply)
+	ok := rf.call(server, "Raft.RequestVote", args, reply)
+	return ok
+}
+
+type AppendEntriesArgs struct {
+	TermInt
+	Leader int
+}
+type AppendEntriesReply struct {
+	TermInt
+}
+
+func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply) {
+	termRes := rf.checkTerm(args.Term)
+	reply.Term = rf.term
+	if termRes == termAhead {
+		return
+	}
+	rf.setLeaderAlive(true)
+	rf.inElection.Store(false)
+	if rf.state != follower {
+		rf.becomeFollower(args.Term)
+	}
+}
+
+func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *AppendEntriesReply) bool {
+	ok := rf.call(server, "Raft.AppendEntries", args, reply)
 	return ok
 }
 
@@ -211,16 +302,93 @@ func (rf *Raft) killed() bool {
 }
 
 func (rf *Raft) ticker() {
-	for rf.killed() == false {
+	for !rf.killed() {
+		if rf.state == leader {
+			rf.heartbeat()
+			time.Sleep(time.Duration(50) * time.Millisecond)
+			continue
+		}
 
-		// Your code here (2A)
-		// Check if a leader election should be started.
+		if !rf.leaderAlive {
+			rf.becomeCandidate()
+			rf.newElection()
+		} else {
+			rf.setLeaderAlive(false)
+		}
 
 		// pause for a random amount of time between 50 and 350
 		// milliseconds.
-		ms := 50 + (rand.Int63() % 300)
+		ms := 50 + (rand.Int63() % 350)
 		time.Sleep(time.Duration(ms) * time.Millisecond)
+
 	}
+}
+
+func (rf *Raft) heartbeat() {
+	for i := range rf.peers {
+		if i == rf.me {
+			continue
+		}
+		rf.sendAppendEntries(i, &AppendEntriesArgs{TermInt{rf.term}, rf.me}, &AppendEntriesReply{})
+	}
+}
+
+func (rf *Raft) becomeCandidate() {
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
+	rf.state = candidate
+	rf.term++
+	rf.vote = rf.me
+}
+
+func (rf *Raft) becomeFollower(term int) {
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
+	rf.state = follower
+	rf.term = term
+	rf.vote = -1
+}
+
+func (rf *Raft) becomeLeader() {
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
+	rf.state = leader
+	println(rf.me, "becomes leader, term", rf.term)
+}
+
+func (rf *Raft) newElection() {
+	println(rf.me, "starts election, term", rf.term, time.Now().Format("15:04:23.0000"))
+	rf.inElection.Store(true)
+	votes := 1
+	for i := range rf.peers {
+		if i == rf.me {
+			continue
+		}
+
+		println(rf.me, "requests vote from", i)
+		reply := RequestVoteReply{}
+		ok := rf.sendRequestVote(i, &RequestVoteArgs{TermInt{rf.term}, rf.me}, &reply)
+		if !ok {
+			println(rf.me, "cannot reach", i)
+			continue
+		}
+		if rf.checkTerm(reply.Term) == termBehind {
+			break
+		}
+		if !rf.inElection.Load() {
+			println("Not in election")
+			return
+		}
+		if reply.Granted {
+			println(rf.me, "got vote from", i)
+			votes++
+			if votes*2 >= len(rf.peers) {
+				rf.becomeLeader()
+				break
+			}
+		}
+	}
+	rf.inElection.Store(false)
 }
 
 // the service or tester wants to create a Raft server. the ports
@@ -238,6 +406,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.peers = peers
 	rf.persister = persister
 	rf.me = me
+	rf.vote = -1
 
 	// Your initialization code here (2A, 2B, 2C).
 
