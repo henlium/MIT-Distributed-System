@@ -354,11 +354,15 @@ func (rf *Raft) becomeLeader() {
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
 	rf.state = leader
-	println(rf.me, "becomes leader, term", rf.term)
+	println(rf.me, "becomes leader, term", rf.term, timestamp())
+}
+
+func timestamp() string {
+	return time.Now().Format("15:04:23.0000")
 }
 
 func (rf *Raft) newElection() {
-	println(rf.me, "starts election, term", rf.term, time.Now().Format("15:04:23.0000"))
+	println(rf.me, "starts election, term", rf.term, timestamp())
 	rf.inElection.Store(true)
 	votes := 1
 	for i := range rf.peers {
