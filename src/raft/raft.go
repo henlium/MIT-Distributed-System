@@ -188,7 +188,11 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 		reply.Granted = false
 		return
 	}
-	if termRes == termBehind || rf.vote == -1 || rf.vote == args.Candidate {
+	if termRes == termBehind {
+		// Current term is updated, and voted for no one yet
+		rf.vote = -1
+	}
+	if rf.vote == -1 || rf.vote == args.Candidate {
 		reply.Granted = true
 		rf.vote = args.Candidate
 	} else {
