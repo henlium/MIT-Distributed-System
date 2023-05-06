@@ -330,7 +330,9 @@ func (rf *Raft) heartbeat() {
 		if i == rf.me {
 			continue
 		}
-		rf.sendAppendEntries(i, &AppendEntriesArgs{TermInt{rf.term}, rf.me}, &AppendEntriesReply{})
+		go func(server int) {
+			rf.sendAppendEntries(server, &AppendEntriesArgs{TermInt{rf.term}, rf.me}, &AppendEntriesReply{})
+		}(i)
 	}
 }
 
