@@ -312,6 +312,9 @@ func (rf *Raft) ticker() {
 		if !rf.leaderAlive {
 			rf.becomeCandidate()
 			rf.newElection()
+			if rf.state == leader {
+				continue
+			}
 		} else {
 			rf.setLeaderAlive(false)
 		}
