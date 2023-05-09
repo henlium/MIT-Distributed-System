@@ -382,41 +382,42 @@ func timestamp() string {
 }
 
 func (rf *Raft) newElection() {
-	var wg sync.WaitGroup
-	var votes atomic.Int64
-	votes.Store(1)
+	c := make(chan RequestVoteReply, len(rf.peers)-1)
 	for i := range rf.peers {
 		if i == rf.me {
 			continue
 		}
 
-		wg.Add(1)
 		go func(server int) {
-			defer wg.Done()
 			reply := RequestVoteReply{}
 			ok := rf.sendRequestVote(
 				server,
 				&RequestVoteArgs{TermInt{rf.term.Load()}, rf.me},
 				&reply)
 			if !ok {
-				return
+				reply.Granted = false
 			}
-			if rf.state.Load() == leader {
-				return
-			}
-			if rf.checkTerm(reply.Term) == termBehind {
-				return
-			}
-			if reply.Granted {
-				votes.Add(1)
-				if int(votes.Load())*2 >= len(rf.peers) {
-					rf.becomeLeader()
-					return
-				}
-			}
+			c <- reply
 		}(i)
 	}
-	wg.Wait()
+	finished := 1
+	votes := 1
+	for finished < len(rf.peers) {
+		reply := <-c
+		finished++
+		if rf.state.Load() != candidate {
+			continue
+		}
+		if rf.checkTerm(reply.Term) == termBehind {
+			continue
+		}
+		if reply.Granted {
+			votes++
+			if votes*2 > len(rf.peers) {
+				rf.becomeLeader()
+			}
+		}
+	}
 }
 
 // the service or tester wants to create a Raft server. the ports
