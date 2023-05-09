@@ -86,7 +86,6 @@ type Raft struct {
 	state       atomic.Value
 	leaderAlive atomic.Bool
 	vote        atomic.Value
-	inElection  atomic.Bool
 }
 
 // return currentTerm and whether this server
@@ -261,7 +260,6 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		return
 	}
 	rf.leaderAlive.Store(true)
-	rf.inElection.Store(false)
 	if rf.state.Load() != follower {
 		rf.becomeFollower(args.Term)
 	}
@@ -388,7 +386,6 @@ func timestamp() string {
 }
 
 func (rf *Raft) newElection() {
-	rf.inElection.Store(true)
 	var wg sync.WaitGroup
 	var votes atomic.Int64
 	votes.Store(1)
@@ -408,7 +405,7 @@ func (rf *Raft) newElection() {
 			if !ok {
 				return
 			}
-			if !rf.inElection.Load() {
+			if rf.state.Load() == leader {
 				return
 			}
 			if rf.checkTerm(reply.Term) == termBehind {
@@ -417,7 +414,6 @@ func (rf *Raft) newElection() {
 			if reply.Granted {
 				votes.Add(1)
 				if int(votes.Load())*2 >= len(rf.peers) {
-					rf.inElection.Store(false)
 					rf.becomeLeader()
 					return
 				}
@@ -425,7 +421,6 @@ func (rf *Raft) newElection() {
 		}(i)
 	}
 	wg.Wait()
-	rf.inElection.Store(false)
 }
 
 // the service or tester wants to create a Raft server. the ports
