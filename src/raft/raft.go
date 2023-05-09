@@ -339,21 +339,17 @@ func (rf *Raft) ticker() {
 
 func (rf *Raft) heartbeat() {
 	// Make this function wait until all sent (for profiling)
-	var wg sync.WaitGroup
 	for i := range rf.peers {
 		if i == rf.me {
 			continue
 		}
-		wg.Add(1)
 		go func(server int) {
-			defer wg.Done()
 			rf.sendAppendEntries(
 				server,
 				&AppendEntriesArgs{TermInt{rf.term.Load()}, rf.me},
 				&AppendEntriesReply{})
 		}(i)
 	}
-	wg.Wait()
 }
 
 func (rf *Raft) becomeCandidate() {
