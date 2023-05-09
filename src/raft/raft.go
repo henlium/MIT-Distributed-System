@@ -49,6 +49,20 @@ type ApplyMsg struct {
 	SnapshotIndex int
 }
 
+type atomicInt struct{ atomic.Int64 }
+
+func (i *atomicInt) Load() int {
+	return int(i.Int64.Load())
+}
+
+func (i *atomicInt) Add(delta int) int {
+	return int(i.Int64.Add(int64(delta)))
+}
+
+func (i *atomicInt) Store(val int) {
+	i.Int64.Store(int64(val))
+}
+
 type State int
 
 const (
@@ -68,17 +82,17 @@ type Raft struct {
 	// Your data here (2A, 2B, 2C).
 	// Look at the paper's Figure 2 for a description of what
 	// state a Raft server must maintain.
-	term        int
-	state       State
+	term        atomicInt
+	state       atomic.Value
 	leaderAlive atomic.Bool
-	vote        int
+	vote        atomic.Value
 	inElection  atomic.Bool
 }
 
 // return currentTerm and whether this server
 // believes it is the leader.
 func (rf *Raft) GetState() (int, bool) {
-	return rf.term, rf.state == leader
+	return rf.term.Load(), rf.state.Load() == leader
 }
 
 // save Raft's persistent state to stable storage,
@@ -155,10 +169,10 @@ const (
 )
 
 func (rf *Raft) checkTerm(term int) int {
-	if term > rf.term {
+	if term > rf.term.Load() {
 		rf.becomeFollower(term)
 		return termBehind
-	} else if term == rf.term {
+	} else if term == rf.term.Load() {
 		return termEqual
 	} else {
 		return termAhead
@@ -182,7 +196,7 @@ type RequestVoteReply struct {
 // example RequestVote RPC handler.
 func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	termRes := rf.checkTerm(args.Term)
-	reply.Term = rf.term
+	reply.Term = rf.term.Load()
 	if termRes == termAhead {
 		// println(rf.me, "rejected vote from", args.Candidate, rf.term, ">", args.Term)
 		reply.Granted = false
@@ -190,11 +204,11 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	}
 	if termRes == termBehind {
 		// Current term is updated, and voted for no one yet
-		rf.vote = -1
+		rf.vote.Store(-1)
 	}
-	if rf.vote == -1 || rf.vote == args.Candidate {
+	if rf.vote.Load() == -1 || rf.vote.Load() == args.Candidate {
 		reply.Granted = true
-		rf.vote = args.Candidate
+		rf.vote.Store(args.Candidate)
 	} else {
 		// println(rf.me, "rejected vote from", args.Candidate, ", already voted for", rf.vote)
 	}
@@ -242,13 +256,13 @@ type AppendEntriesReply struct {
 
 func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply) {
 	termRes := rf.checkTerm(args.Term)
-	reply.Term = rf.term
+	reply.Term = rf.term.Load()
 	if termRes == termAhead {
 		return
 	}
 	rf.leaderAlive.Store(true)
 	rf.inElection.Store(false)
-	if rf.state != follower {
+	if rf.state.Load() != follower {
 		rf.becomeFollower(args.Term)
 	}
 }
@@ -301,16 +315,16 @@ func (rf *Raft) killed() bool {
 
 func (rf *Raft) ticker() {
 	for !rf.killed() {
-		if rf.state == leader {
+		if rf.state.Load() == leader {
 			rf.heartbeat()
-			time.Sleep(time.Duration(100) * time.Millisecond)
+			time.Sleep(time.Duration(80) * time.Millisecond)
 			continue
 		}
 
 		if !rf.leaderAlive.Load() {
 			rf.becomeCandidate()
 			rf.newElection()
-			if rf.state == leader {
+			if rf.state.Load() == leader {
 				continue
 			}
 		} else {
@@ -319,82 +333,98 @@ func (rf *Raft) ticker() {
 
 		// pause for a random amount of time between 50 and 350
 		// milliseconds.
-		ms := 120 + (rand.Int63() % 200)
+		ms := 100 + (rand.Int63() % 50)
 		time.Sleep(time.Duration(ms) * time.Millisecond)
 
 	}
 }
 
 func (rf *Raft) heartbeat() {
+	// Make this function wait until all sent (for profiling)
+	var wg sync.WaitGroup
 	for i := range rf.peers {
 		if i == rf.me {
 			continue
 		}
+		wg.Add(1)
 		go func(server int) {
-			rf.sendAppendEntries(server, &AppendEntriesArgs{TermInt{rf.term}, rf.me}, &AppendEntriesReply{})
+			defer wg.Done()
+			rf.sendAppendEntries(
+				server,
+				&AppendEntriesArgs{TermInt{rf.term.Load()}, rf.me},
+				&AppendEntriesReply{})
 		}(i)
 	}
+	wg.Wait()
 }
 
 func (rf *Raft) becomeCandidate() {
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
-	rf.state = candidate
-	rf.term++
-	rf.vote = rf.me
+	rf.state.Store(candidate)
+	rf.term.Add(1)
+	rf.vote.Store(rf.me)
 }
 
 func (rf *Raft) becomeFollower(term int) {
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
-	rf.state = follower
-	rf.term = term
-	rf.vote = -1
+	rf.state.Store(follower)
+	rf.term.Store(term)
+	rf.vote.Store(-1)
 }
 
 func (rf *Raft) becomeLeader() {
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
-	rf.state = leader
-	println(rf.me, "becomes leader, term", rf.term, timestamp())
+	if rf.state.Load() == leader {
+		return
+	}
+	rf.state.Store(leader)
 }
 
 func timestamp() string {
-	return time.Now().Format("15:04:23.0000")
+	return time.Now().Format(time.StampMicro)
 }
 
 func (rf *Raft) newElection() {
-	println(rf.me, "starts election, term", rf.term, timestamp())
 	rf.inElection.Store(true)
-	votes := 1
+	var wg sync.WaitGroup
+	var votes atomic.Int64
+	votes.Store(1)
 	for i := range rf.peers {
 		if i == rf.me {
 			continue
 		}
 
-		println(rf.me, "requests vote from", i)
-		reply := RequestVoteReply{}
-		ok := rf.sendRequestVote(i, &RequestVoteArgs{TermInt{rf.term}, rf.me}, &reply)
-		if !ok {
-			println(rf.me, "cannot reach", i)
-			continue
-		}
-		if rf.checkTerm(reply.Term) == termBehind {
-			break
-		}
-		if !rf.inElection.Load() {
-			println("Not in election")
-			return
-		}
-		if reply.Granted {
-			println(rf.me, "got vote from", i)
-			votes++
-			if votes*2 >= len(rf.peers) {
-				rf.becomeLeader()
-				break
+		wg.Add(1)
+		go func(server int) {
+			defer wg.Done()
+			reply := RequestVoteReply{}
+			ok := rf.sendRequestVote(
+				server,
+				&RequestVoteArgs{TermInt{rf.term.Load()}, rf.me},
+				&reply)
+			if !ok {
+				return
 			}
-		}
+			if !rf.inElection.Load() {
+				return
+			}
+			if rf.checkTerm(reply.Term) == termBehind {
+				return
+			}
+			if reply.Granted {
+				votes.Add(1)
+				if int(votes.Load())*2 >= len(rf.peers) {
+					rf.inElection.Store(false)
+					rf.becomeLeader()
+					return
+				}
+			}
+		}(i)
 	}
+	wg.Wait()
 	rf.inElection.Store(false)
 }
 
@@ -413,7 +443,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.peers = peers
 	rf.persister = persister
 	rf.me = me
-	rf.vote = -1
+	rf.vote.Store(-1)
 
 	// Your initialization code here (2A, 2B, 2C).
 
