@@ -73,6 +73,7 @@ const (
 
 // A Go object implementing a single Raft peer.
 type Raft struct {
+	// mu should be used during serving an RPC, when an election timer expired and when an election is passed
 	mu        sync.Mutex          // Lock to protect shared access to this peer's state
 	peers     []*labrpc.ClientEnd // RPC end points of all peers
 	persister *Persister          // Object to hold this peer's persisted state
@@ -85,7 +86,7 @@ type Raft struct {
 
 	// All following fields should be guarded by mu for both reads and writes
 	term        int
-	state       atomic.Value
+	state       State
 	leaderAlive atomic.Bool
 	vote        atomic.Value
 }
@@ -95,7 +96,7 @@ type Raft struct {
 func (rf *Raft) GetState() (int, bool) {
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
-	return rf.term, rf.state.Load() == leader
+	return rf.term, rf.state == leader
 }
 
 // save Raft's persistent state to stable storage,
@@ -291,7 +292,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		return
 	}
 	rf.leaderAlive.Store(true)
-	if rf.state.Load() != follower {
+	if rf.state != follower {
 		rf.becomeFollower(args.Term)
 	}
 }
@@ -345,7 +346,7 @@ func (rf *Raft) killed() bool {
 
 func (rf *Raft) ticker() {
 	for !rf.killed() {
-		if rf.state.Load() == leader {
+		if _, isLeader := rf.GetState(); isLeader {
 			rf.heartbeat()
 			time.Sleep(time.Duration(80) * time.Millisecond)
 			continue
@@ -353,21 +354,16 @@ func (rf *Raft) ticker() {
 
 		if !rf.leaderAlive.Load() {
 			rf.mu.Lock()
+			rf.leaderAlive.Store(false)
 			rf.becomeCandidate()
 			rf.mu.Unlock()
-			rf.newElection()
-			if rf.state.Load() == leader {
-				continue
-			}
-		} else {
-			rf.leaderAlive.Store(false)
+			go rf.newElection()
 		}
 
 		// pause for a random amount of time between 50 and 350
 		// milliseconds.
 		ms := 100 + (rand.Int63() % 50)
 		time.Sleep(time.Duration(ms) * time.Millisecond)
-
 	}
 }
 
@@ -387,22 +383,22 @@ func (rf *Raft) heartbeat() {
 }
 
 func (rf *Raft) becomeCandidate() {
-	rf.state.Store(candidate)
+	rf.state = candidate
 	rf.term++
 	rf.vote.Store(rf.me)
 }
 
 func (rf *Raft) becomeFollower(term int) {
-	rf.state.Store(follower)
+	rf.state = follower
 	rf.term = term
 	rf.vote.Store(-1)
 }
 
 func (rf *Raft) becomeLeader() {
-	if rf.state.Load() == leader {
+	if rf.state == leader {
 		return
 	}
-	rf.state.Store(leader)
+	rf.state = leader
 }
 
 func timestamp() string {
@@ -435,7 +431,7 @@ func (rf *Raft) newElection() {
 		reply := <-c
 		finished++
 		rf.mu.Lock()
-		if rf.state.Load() != candidate {
+		if rf.state != candidate {
 			rf.mu.Unlock()
 			continue
 		}
