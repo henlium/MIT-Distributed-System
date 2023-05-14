@@ -82,7 +82,9 @@ type Raft struct {
 	// Your data here (2A, 2B, 2C).
 	// Look at the paper's Figure 2 for a description of what
 	// state a Raft server must maintain.
-	term        atomicInt
+
+	// All following fields should be guarded by mu for both reads and writes
+	term        int
 	state       atomic.Value
 	leaderAlive atomic.Bool
 	vote        atomic.Value
@@ -91,7 +93,9 @@ type Raft struct {
 // return currentTerm and whether this server
 // believes it is the leader.
 func (rf *Raft) GetState() (int, bool) {
-	return rf.term.Load(), rf.state.Load() == leader
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
+	return rf.term, rf.state.Load() == leader
 }
 
 // save Raft's persistent state to stable storage,
@@ -156,7 +160,9 @@ func (t TermInt) getTerm() int {
 func (rf *Raft) call(server int, svcMeth string, args Termer, reply Termer) bool {
 	ok := rf.peers[server].Call(svcMeth, args, reply)
 	if ok {
+		rf.mu.Lock()
 		rf.checkTerm(reply.getTerm())
+		rf.mu.Unlock()
 	}
 	return ok
 }
@@ -167,11 +173,14 @@ const (
 	termAhead
 )
 
+// Check if this server's current term is behind.
+// If so, it will transit to follower state.
+// Either termBehind, termEqual or termAhead will be returned.
 func (rf *Raft) checkTerm(term int) int {
-	if term > rf.term.Load() {
+	if term > rf.term {
 		rf.becomeFollower(term)
 		return termBehind
-	} else if term == rf.term.Load() {
+	} else if term == rf.term {
 		return termEqual
 	} else {
 		return termAhead
@@ -185,6 +194,12 @@ type RequestVoteArgs struct {
 	Candidate int
 }
 
+func makeRequestVoteArgs(rf *Raft) RequestVoteArgs {
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
+	return RequestVoteArgs{TermInt{rf.term}, rf.me}
+}
+
 // example RequestVote RPC reply structure.
 // field names must start with capital letters!
 type RequestVoteReply struct {
@@ -194,8 +209,10 @@ type RequestVoteReply struct {
 
 // example RequestVote RPC handler.
 func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
 	termRes := rf.checkTerm(args.Term)
-	reply.Term = rf.term.Load()
+	reply.Term = rf.term
 	if termRes == termAhead {
 		// println(rf.me, "rejected vote from", args.Candidate, rf.term, ">", args.Term)
 		reply.Granted = false
@@ -241,6 +258,11 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 // that the caller passes the address of the reply struct with &, not
 // the struct itself.
 func (rf *Raft) sendRequestVote(server int, args *RequestVoteArgs, reply *RequestVoteReply) bool {
+	if args.Term == 0 {
+		rf.mu.Lock()
+		args.Term = rf.term
+		rf.mu.Unlock()
+	}
 	ok := rf.call(server, "Raft.RequestVote", args, reply)
 	return ok
 }
@@ -249,13 +271,22 @@ type AppendEntriesArgs struct {
 	TermInt
 	Leader int
 }
+
+func (rf *Raft) makeAppendEntriesArgs() AppendEntriesArgs {
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
+	return AppendEntriesArgs{TermInt{rf.term}, rf.me}
+}
+
 type AppendEntriesReply struct {
 	TermInt
 }
 
 func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply) {
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
 	termRes := rf.checkTerm(args.Term)
-	reply.Term = rf.term.Load()
+	reply.Term = rf.term
 	if termRes == termAhead {
 		return
 	}
@@ -265,6 +296,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	}
 }
 
+// Adds the term number to args inside. No need to do it elsewhere
 func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *AppendEntriesReply) bool {
 	ok := rf.call(server, "Raft.AppendEntries", args, reply)
 	return ok
@@ -320,7 +352,9 @@ func (rf *Raft) ticker() {
 		}
 
 		if !rf.leaderAlive.Load() {
+			rf.mu.Lock()
 			rf.becomeCandidate()
+			rf.mu.Unlock()
 			rf.newElection()
 			if rf.state.Load() == leader {
 				continue
@@ -338,7 +372,7 @@ func (rf *Raft) ticker() {
 }
 
 func (rf *Raft) heartbeat() {
-	// Make this function wait until all sent (for profiling)
+	args := rf.makeAppendEntriesArgs()
 	for i := range rf.peers {
 		if i == rf.me {
 			continue
@@ -346,31 +380,25 @@ func (rf *Raft) heartbeat() {
 		go func(server int) {
 			rf.sendAppendEntries(
 				server,
-				&AppendEntriesArgs{TermInt{rf.term.Load()}, rf.me},
+				&args,
 				&AppendEntriesReply{})
 		}(i)
 	}
 }
 
 func (rf *Raft) becomeCandidate() {
-	rf.mu.Lock()
-	defer rf.mu.Unlock()
 	rf.state.Store(candidate)
-	rf.term.Add(1)
+	rf.term++
 	rf.vote.Store(rf.me)
 }
 
 func (rf *Raft) becomeFollower(term int) {
-	rf.mu.Lock()
-	defer rf.mu.Unlock()
 	rf.state.Store(follower)
-	rf.term.Store(term)
+	rf.term = term
 	rf.vote.Store(-1)
 }
 
 func (rf *Raft) becomeLeader() {
-	rf.mu.Lock()
-	defer rf.mu.Unlock()
 	if rf.state.Load() == leader {
 		return
 	}
@@ -382,6 +410,7 @@ func timestamp() string {
 }
 
 func (rf *Raft) newElection() {
+	args := makeRequestVoteArgs(rf)
 	c := make(chan RequestVoteReply, len(rf.peers)-1)
 	for i := range rf.peers {
 		if i == rf.me {
@@ -392,7 +421,7 @@ func (rf *Raft) newElection() {
 			reply := RequestVoteReply{}
 			ok := rf.sendRequestVote(
 				server,
-				&RequestVoteArgs{TermInt{rf.term.Load()}, rf.me},
+				&args,
 				&reply)
 			if !ok {
 				reply.Granted = false
@@ -405,10 +434,13 @@ func (rf *Raft) newElection() {
 	for finished < len(rf.peers) {
 		reply := <-c
 		finished++
+		rf.mu.Lock()
 		if rf.state.Load() != candidate {
+			rf.mu.Unlock()
 			continue
 		}
 		if rf.checkTerm(reply.Term) == termBehind {
+			rf.mu.Unlock()
 			continue
 		}
 		if reply.Granted {
@@ -417,6 +449,7 @@ func (rf *Raft) newElection() {
 				rf.becomeLeader()
 			}
 		}
+		rf.mu.Unlock()
 	}
 }
 
