@@ -49,20 +49,6 @@ type ApplyMsg struct {
 	SnapshotIndex int
 }
 
-type atomicInt struct{ atomic.Int64 }
-
-func (i *atomicInt) Load() int {
-	return int(i.Int64.Load())
-}
-
-func (i *atomicInt) Add(delta int) int {
-	return int(i.Int64.Add(int64(delta)))
-}
-
-func (i *atomicInt) Store(val int) {
-	i.Int64.Store(int64(val))
-}
-
 type State int
 
 const (
