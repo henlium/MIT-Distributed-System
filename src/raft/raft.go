@@ -161,7 +161,7 @@ const (
 )
 
 // Check if this server's current term is behind.
-// If so, it will transit to follower state.
+// If so, it will transit to follower state and update its term.
 // Either termBehind, termEqual or termAhead will be returned.
 func (rf *Raft) checkTerm(term int) int {
 	if term > rf.term {
