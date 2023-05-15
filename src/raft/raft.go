@@ -73,8 +73,8 @@ type Raft struct {
 	// All following fields should be guarded by mu for both reads and writes
 	term        int
 	state       State
-	leaderAlive atomic.Bool
-	vote        atomic.Value
+	leaderAlive bool
+	vote        int
 }
 
 // return currentTerm and whether this server
@@ -199,9 +199,9 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 		reply.Granted = false
 		return
 	}
-	if rf.vote.Load() == -1 || rf.vote.Load() == args.Candidate {
+	if rf.vote == -1 || rf.vote == args.Candidate {
 		reply.Granted = true
-		rf.vote.Store(args.Candidate)
+		rf.vote = args.Candidate
 	} else {
 		// println(rf.me, "rejected vote from", args.Candidate, ", already voted for", rf.vote)
 	}
@@ -267,7 +267,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	if termRes == termAhead {
 		return
 	}
-	rf.leaderAlive.Store(true)
+	rf.leaderAlive = true
 	if rf.state != follower {
 		rf.becomeFollower(args.Term)
 	}
@@ -331,11 +331,11 @@ func (rf *Raft) ticker() {
 			continue
 		}
 
-		if !rf.leaderAlive.Load() {
+		if !rf.leaderAlive {
 			newTerm := rf.becomeCandidate()
 			go rf.newElection(newTerm)
 		}
-		rf.leaderAlive.Store(false)
+		rf.leaderAlive = false
 		rf.mu.Unlock()
 
 		// pause for a random amount of time between 50 and 350
@@ -364,14 +364,14 @@ func (rf *Raft) heartbeat(term int) {
 func (rf *Raft) becomeCandidate() int {
 	rf.state = candidate
 	rf.term++
-	rf.vote.Store(rf.me)
+	rf.vote = rf.me
 	return rf.term
 }
 
 func (rf *Raft) becomeFollower(term int) {
 	rf.state = follower
 	rf.term = term
-	rf.vote.Store(-1)
+	rf.vote = -1
 }
 
 func (rf *Raft) becomeLeader() {
@@ -436,7 +436,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.peers = peers
 	rf.persister = persister
 	rf.me = me
-	rf.vote.Store(-1)
+	rf.vote = -1
 
 	// Your initialization code here (2A, 2B, 2C).
 
