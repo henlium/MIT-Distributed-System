@@ -414,6 +414,7 @@ func (rf *Raft) newElection(term int) {
 			votes++
 			if votes*2 >= len(rf.peers) {
 				rf.becomeLeader()
+				rf.heartbeat(term)
 			}
 		}
 		rf.mu.Unlock()
