@@ -205,10 +205,6 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 		reply.Granted = false
 		return
 	}
-	if termRes == termBehind {
-		// Current term is updated, and voted for no one yet
-		rf.vote.Store(-1)
-	}
 	if rf.vote.Load() == -1 || rf.vote.Load() == args.Candidate {
 		reply.Granted = true
 		rf.vote.Store(args.Candidate)
