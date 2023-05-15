@@ -335,6 +335,7 @@ func (rf *Raft) ticker() {
 			newTerm := rf.becomeCandidate()
 			go rf.newElection(newTerm)
 		}
+		rf.leaderAlive.Store(false)
 		rf.mu.Unlock()
 
 		// pause for a random amount of time between 50 and 350
