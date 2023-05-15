@@ -181,12 +181,6 @@ type RequestVoteArgs struct {
 	Candidate int
 }
 
-func makeRequestVoteArgs(rf *Raft) RequestVoteArgs {
-	rf.mu.Lock()
-	defer rf.mu.Unlock()
-	return RequestVoteArgs{TermInt{rf.term}, rf.me}
-}
-
 // example RequestVote RPC reply structure.
 // field names must start with capital letters!
 type RequestVoteReply struct {
@@ -328,29 +322,30 @@ func (rf *Raft) killed() bool {
 
 func (rf *Raft) ticker() {
 	for !rf.killed() {
-		if _, isLeader := rf.GetState(); isLeader {
-			rf.heartbeat()
+		rf.mu.Lock()
+		if rf.state == leader {
+			term := rf.term
+			rf.mu.Unlock()
+			rf.heartbeat(term)
 			time.Sleep(time.Duration(80) * time.Millisecond)
 			continue
 		}
 
 		if !rf.leaderAlive.Load() {
-			rf.mu.Lock()
-			rf.leaderAlive.Store(false)
-			rf.becomeCandidate()
-			rf.mu.Unlock()
-			go rf.newElection()
+			newTerm := rf.becomeCandidate()
+			go rf.newElection(newTerm)
 		}
+		rf.mu.Unlock()
 
 		// pause for a random amount of time between 50 and 350
 		// milliseconds.
-		ms := 100 + (rand.Int63() % 50)
+		ms := 50 + (rand.Int63() % 300)
 		time.Sleep(time.Duration(ms) * time.Millisecond)
 	}
 }
 
-func (rf *Raft) heartbeat() {
-	args := rf.makeAppendEntriesArgs()
+func (rf *Raft) heartbeat(term int) {
+	args := AppendEntriesArgs{TermInt{term}, rf.me}
 	for i := range rf.peers {
 		if i == rf.me {
 			continue
@@ -364,10 +359,12 @@ func (rf *Raft) heartbeat() {
 	}
 }
 
-func (rf *Raft) becomeCandidate() {
+// transits to candidate state and returns the new term number
+func (rf *Raft) becomeCandidate() int {
 	rf.state = candidate
 	rf.term++
 	rf.vote.Store(rf.me)
+	return rf.term
 }
 
 func (rf *Raft) becomeFollower(term int) {
@@ -409,17 +406,12 @@ func (rf *Raft) newElection(term int) {
 		reply := <-c
 		finished++
 		rf.mu.Lock()
-		if rf.state != candidate {
-			rf.mu.Unlock()
-			continue
-		}
-		if rf.checkTerm(reply.Term) == termBehind {
-			rf.mu.Unlock()
-			continue
-		}
-		if reply.Granted {
+		if term == rf.term &&
+			rf.state == candidate &&
+			rf.checkTerm(reply.Term) != termBehind &&
+			reply.Granted {
 			votes++
-			if votes*2 > len(rf.peers) {
+			if votes*2 >= len(rf.peers) {
 				rf.becomeLeader()
 			}
 		}
