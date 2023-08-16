@@ -49,10 +49,10 @@ type ApplyMsg struct {
 	SnapshotIndex int
 }
 
-type State int
+type state int
 
 const (
-	follower State = iota
+	follower state = iota
 	candidate
 	leader
 )
@@ -72,7 +72,7 @@ type Raft struct {
 
 	// All following fields should be guarded by mu for both reads and writes
 	term        int
-	state       State
+	state       state
 	leaderAlive bool
 	vote        int
 }
