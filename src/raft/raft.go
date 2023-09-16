@@ -159,8 +159,7 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	termAhead := rf.checkTerm(args.Term)
 	reply.Term = rf.term
 	if termAhead {
-		// println(rf.me, "rejected vote from", args.Candidate, rf.term, ">", args.Term)
-		reply.Granted = false
+		// Do not bother with request from server of older term
 		return
 	}
 	if rf.vote == -1 || rf.vote == args.Candidate {
@@ -214,6 +213,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	termAhead := rf.checkTerm(args.Term)
 	reply.Term = rf.term
 	if termAhead {
+		// Do not bother with request from server of older term
 		return
 	}
 	rf.leaderAlive = true
