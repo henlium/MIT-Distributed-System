@@ -142,33 +142,23 @@ func (rf *Raft) call(server int, svcMeth string, args Termer, reply Termer) bool
 	return ok
 }
 
-const (
-	termBehind int = iota
-	termEqual
-	termAhead
-)
-
-// Check if this server's current term is behind.
-// If so, it will transit to follower state and update its term.
-// Either termBehind, termEqual or termAhead will be returned.
-func (rf *Raft) checkTerm(term int) int {
+// Return if this server's term is ahead.
+// If this server's term is behind, it will become follower
+// and update its term.
+func (rf *Raft) checkTerm(term int) bool {
 	if term > rf.term {
 		rf.becomeFollower(term)
-		return termBehind
-	} else if term == rf.term {
-		return termEqual
-	} else {
-		return termAhead
 	}
+	return rf.term > term
 }
 
 // example RequestVote RPC handler.
 func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
-	termRes := rf.checkTerm(args.Term)
+	termAhead := rf.checkTerm(args.Term)
 	reply.Term = rf.term
-	if termRes == termAhead {
+	if termAhead {
 		// println(rf.me, "rejected vote from", args.Candidate, rf.term, ">", args.Term)
 		reply.Granted = false
 		return
@@ -221,9 +211,9 @@ func (rf *Raft) sendRequestVote(server int, args *RequestVoteArgs, reply *Reques
 func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply) {
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
-	termRes := rf.checkTerm(args.Term)
+	termAhead := rf.checkTerm(args.Term)
 	reply.Term = rf.term
-	if termRes == termAhead {
+	if termAhead {
 		return
 	}
 	rf.leaderAlive = true
