@@ -387,12 +387,8 @@ func (rf *Raft) becomeLeader() {
 	rf.state = leader
 }
 
-func timestamp() string {
-	return time.Now().Format(time.StampMicro)
-}
-
-func (rf *Raft) newElection() {
-	args := makeRequestVoteArgs(rf)
+func (rf *Raft) newElection(term int) {
+	args := RequestVoteArgs{TermInt{term}, rf.me}
 	c := make(chan RequestVoteReply, len(rf.peers)-1)
 	for i := range rf.peers {
 		if i == rf.me {
