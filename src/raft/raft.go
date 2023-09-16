@@ -227,9 +227,6 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		return
 	}
 	rf.leaderAlive = true
-	if rf.state != follower {
-		rf.becomeFollower(args.Term)
-	}
 }
 
 // Adds the term number to args inside. No need to do it elsewhere
@@ -366,9 +363,9 @@ func (rf *Raft) newElection(term int) {
 		reply := <-c
 		finished++
 		rf.mu.Lock()
+		rf.checkTerm(reply.Term)
 		if term == rf.term &&
 			rf.state == candidate &&
-			rf.checkTerm(reply.Term) != termBehind &&
 			reply.Granted {
 			votes++
 			if votes*2 >= len(rf.peers) {
