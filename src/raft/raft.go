@@ -57,6 +57,11 @@ const (
 	leader
 )
 
+type logEntry struct {
+	command interface{}
+	term    int
+}
+
 // A Go object implementing a single Raft peer.
 type Raft struct {
 	// mu should be used during serving an RPC, when an election timer expired and when an election is passed
@@ -75,6 +80,16 @@ type Raft struct {
 	state       state
 	leaderAlive bool
 	vote        int
+	logs        []logEntry
+	applyCh     chan ApplyMsg
+
+	// Volatile states
+	commitIndex int
+	lastApplied int
+
+	// Volatile leader states
+	nextIndex  []int
+	matchIndex []int
 }
 
 // return currentTerm and whether this server
@@ -378,6 +393,10 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.persister = persister
 	rf.me = me
 	rf.vote = -1
+	rf.applyCh = applyCh
+
+	rf.nextIndex = make([]int, len(peers))
+	rf.matchIndex = make([]int, len(peers))
 
 	// Your initialization code here (2A, 2B, 2C).
 
