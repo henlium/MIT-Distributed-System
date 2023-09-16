@@ -132,18 +132,6 @@ func (rf *Raft) Snapshot(index int, snapshot []byte) {
 
 }
 
-type Termer interface {
-	getTerm() int
-}
-
-type TermInt struct {
-	Term int
-}
-
-func (t TermInt) getTerm() int {
-	return t.Term
-}
-
 func (rf *Raft) call(server int, svcMeth string, args Termer, reply Termer) bool {
 	ok := rf.peers[server].Call(svcMeth, args, reply)
 	if ok {
@@ -172,20 +160,6 @@ func (rf *Raft) checkTerm(term int) int {
 	} else {
 		return termAhead
 	}
-}
-
-// example RequestVote RPC arguments structure.
-// field names must start with capital letters!
-type RequestVoteArgs struct {
-	TermInt
-	Candidate int
-}
-
-// example RequestVote RPC reply structure.
-// field names must start with capital letters!
-type RequestVoteReply struct {
-	TermInt
-	Granted bool
 }
 
 // example RequestVote RPC handler.
@@ -242,21 +216,6 @@ func (rf *Raft) sendRequestVote(server int, args *RequestVoteArgs, reply *Reques
 	}
 	ok := rf.call(server, "Raft.RequestVote", args, reply)
 	return ok
-}
-
-type AppendEntriesArgs struct {
-	TermInt
-	Leader int
-}
-
-func (rf *Raft) makeAppendEntriesArgs() AppendEntriesArgs {
-	rf.mu.Lock()
-	defer rf.mu.Unlock()
-	return AppendEntriesArgs{TermInt{rf.term}, rf.me}
-}
-
-type AppendEntriesReply struct {
-	TermInt
 }
 
 func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply) {
