@@ -57,9 +57,10 @@ const (
 	leader
 )
 
-type logEntry struct {
-	command interface{}
-	term    int
+type Log struct {
+	Index   int
+	Term    int
+	Command interface{}
 }
 
 // A Go object implementing a single Raft peer.
@@ -80,7 +81,7 @@ type Raft struct {
 	state       state
 	leaderAlive bool
 	vote        int
-	logs        []logEntry
+	logs        []Log
 	applyCh     chan ApplyMsg
 
 	// Volatile states
@@ -227,11 +228,31 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		return
 	}
 	rf.leaderAlive = true
+	// Return not success when PrevLogTerm is not consistent with what this server has
+	prevLogIndex := args.PrevLogIndex - 1
+	if prevLogIndex >= 0 && prevLogIndex < len(rf.logs) && rf.logs[prevLogIndex].Term != args.PrevLogTerm {
+		return
+	}
+	if args.LeaderCommit > rf.commitIndex {
+		for index := rf.commitIndex + 1; index <= args.LeaderCommit; index++ {
+			rf.commit(index)
+		}
+	}
+	rf.logs = append(rf.logs, args.Entries...)
+	reply.Success = true
 }
 
 // Adds the term number to args inside. No need to do it elsewhere
 func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *AppendEntriesReply) bool {
 	ok := rf.call(server, "Raft.AppendEntries", args, reply)
+	rf.mu.Lock()
+	if (!reply.Success) && rf.state == leader && rf.nextIndex[server] > 1 {
+		rf.nextIndex[server] -= 1
+	}
+	if reply.Success {
+		rf.nextIndex[server] = args.PrevLogIndex + len(args.Entries) + 1
+	}
+	rf.mu.Unlock()
 	return ok
 }
 
@@ -247,14 +268,34 @@ func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *Ap
 // if it's ever committed. the second return value is the current
 // term. the third return value is true if this server believes it is
 // the leader.
-func (rf *Raft) Start(command interface{}) (int, int, bool) {
-	index := -1
-	term := -1
-	isLeader := true
+func (rf *Raft) Start(command interface{}) (index int, term int, isLeader bool) {
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
 
-	// Your code here (2B).
+	if rf.state != leader {
+		return
+	}
 
-	return index, term, isLeader
+	index = len(rf.logs) + 1
+	term = rf.term
+	isLeader = rf.state == leader
+
+	log := Log{index, term, command}
+	rf.logs = append(rf.logs, log)
+
+	return
+}
+
+// Return true when the majority of peers has replicated the log at index
+func (rf *Raft) canCommit(index int) bool {
+	replicated := 0
+	for i := range rf.peers {
+		if i == rf.me || rf.matchIndex[i] >= index {
+			replicated += 1
+		}
+	}
+
+	return replicated*2 > len(rf.peers)
 }
 
 // the tester doesn't halt goroutines created by Raft after each test,
@@ -282,7 +323,8 @@ func (rf *Raft) ticker() {
 		if rf.state == leader {
 			term := rf.term
 			rf.mu.Unlock()
-			rf.heartbeat(term)
+			rf.replicateLogs(term)
+			go rf.tryCommit()
 			time.Sleep(time.Duration(80) * time.Millisecond)
 			continue
 		}
@@ -301,12 +343,13 @@ func (rf *Raft) ticker() {
 	}
 }
 
-func (rf *Raft) heartbeat(term int) {
-	args := AppendEntriesArgs{TermInt{term}, rf.me}
+// Replicate logs to other servers
+func (rf *Raft) replicateLogs(term int) {
 	for i := range rf.peers {
 		if i == rf.me {
 			continue
 		}
+		args := rf.makeAppendEntriesArgs(term, i)
 		go func(server int) {
 			rf.sendAppendEntries(
 				server,
@@ -314,6 +357,38 @@ func (rf *Raft) heartbeat(term int) {
 				&AppendEntriesReply{})
 		}(i)
 	}
+}
+
+func (rf *Raft) makeAppendEntriesArgs(term int, server int) (args AppendEntriesArgs) {
+	args.Term = term
+	args.Leader = rf.me
+	args.PrevLogIndex = rf.nextIndex[server] - 1
+	if args.PrevLogIndex > 0 {
+		args.PrevLogTerm = rf.logs[args.PrevLogIndex-1].Term
+	}
+	copy(args.Entries, rf.logs[args.PrevLogIndex:])
+	args.LeaderCommit = rf.commitIndex
+	return
+}
+
+func (rf *Raft) tryCommit() {
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
+
+	if rf.state != leader {
+		return
+	}
+	for index := rf.commitIndex + 1; index <= len(rf.logs); index++ {
+		if !rf.canCommit(index) {
+			break
+		}
+		rf.commit(index)
+		rf.commitIndex = index
+	}
+}
+
+func (rf *Raft) commit(index int) {
+	rf.applyCh <- ApplyMsg{CommandValid: true, Command: rf.logs[index-1], CommandIndex: index}
 }
 
 // transits to candidate state and returns the new term number
@@ -335,6 +410,10 @@ func (rf *Raft) becomeLeader() {
 		return
 	}
 	rf.state = leader
+	nextIndex := len(rf.logs) + 1
+	for i := range rf.peers {
+		rf.nextIndex[i] = nextIndex
+	}
 }
 
 func (rf *Raft) newElection(term int) {
@@ -370,7 +449,7 @@ func (rf *Raft) newElection(term int) {
 			votes++
 			if votes*2 >= len(rf.peers) {
 				rf.becomeLeader()
-				rf.heartbeat(term)
+				rf.replicateLogs(term)
 			}
 		}
 		rf.mu.Unlock()
